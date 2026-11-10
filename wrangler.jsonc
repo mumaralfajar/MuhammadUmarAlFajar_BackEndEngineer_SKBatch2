@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sekolah-karir-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      // Nama binding: diakses di kode sebagai c.env.DB
+      "binding": "DB",
+      "database_name": "sekolah-karir-db",
+      // Ganti dengan ID dari `npx wrangler d1 create sekolah-karir-db` sebelum deploy.
+      // Untuk development lokal, nilai placeholder ini sudah cukup.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Rate limiting bawaan Workers (tersedia di free plan, tidak memakai kuota D1/KV).
+  // Diakses di kode sebagai c.env.RATE_LIMITER.limit({ key }).
+  // `period` hanya boleh 10 atau 60 (detik).
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 60, "period": 60 }
+    }
+  ]
+  // Secret API_KEY TIDAK ditulis di sini.
+  // Lokal: simpan di file .dev.vars  |  Produksi: `npx wrangler secret put API_KEY`
+}
