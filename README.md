@@ -26,7 +26,8 @@ README ini sengaja ditulis panjang. Tujuannya dua: menjelaskan cara memakai proj
 16. [Deploy ke Cloudflare](#16-deploy-ke-cloudflare)
 17. [Batas Free Tier yang Perlu Diketahui](#17-batas-free-tier-yang-perlu-diketahui)
 18. [Troubleshooting](#18-troubleshooting)
-19. [Langkah Belajar Selanjutnya](#19-langkah-belajar-selanjutnya)
+19. [Cara Project Ini Dibuat (End-to-End)](#19-cara-project-ini-dibuat-end-to-end)
+20. [Langkah Belajar Selanjutnya](#20-langkah-belajar-selanjutnya)
 
 ---
 
@@ -554,7 +555,7 @@ Implementasi ([`src/middleware/auth.ts`](src/middleware/auth.ts)):
 - **Fail closed**: jika `API_KEY` lupa dipasang di server, semua request ditolak (500), bukan malah dibiarkan terbuka.
 - Respons 401 menyertakan header `WWW-Authenticate: Bearer` sesuai standar HTTP.
 
-> Ini adalah autentikasi **service-to-service** sederhana (satu key bersama). Untuk banyak pengguna dengan peran berbeda, langkah berikutnya adalah JWT atau Cloudflare Access (lihat [bagian 19](#19-langkah-belajar-selanjutnya)).
+> Ini adalah autentikasi **service-to-service** sederhana (satu key bersama). Untuk banyak pengguna dengan peran berbeda, langkah berikutnya adalah JWT atau Cloudflare Access (lihat [bagian 20](#20-langkah-belajar-selanjutnya)).
 
 ---
 
@@ -799,7 +800,227 @@ Desain project ini sudah memperhitungkannya:
 
 ---
 
-## 19. Langkah Belajar Selanjutnya
+## 19. Cara Project Ini Dibuat (End-to-End)
+
+Bagian ini menceritakan **urutan kerja sebenarnya** saat membangun project ini dari folder kosong sampai ter-push ke GitHub, termasuk keputusan yang diambil, masalah yang ditemui, dan cara mengatasinya. Kamu bisa mengikutinya untuk membuat project serupa dari nol.
+
+### 19.1 Alur kerja secara garis besar
+
+```
+ 1. Rencana         →  2. Cek tooling     →  3. Scaffold & dependency
+ 4. Konfigurasi     →  5. Skema database  →  6. Generate tipe
+ 7. Kode (lapis demi lapis)               →  8. Test otomatis
+ 9. Smoke test manual (wrangler dev + curl + Swagger)
+10. Dokumentasi     → 11. Git & GitHub
+```
+
+Prinsip yang dipegang sepanjang jalan:
+- **Rencanakan dulu, baru menulis kode.** Endpoint, skema data, aturan validasi, dan aturan stage disepakati sebelum ada satu baris kode pun.
+- **Bangun dari bawah ke atas:** database → skema data → query → route → middleware. Setiap lapis hanya bergantung pada lapis di bawahnya.
+- **Verifikasi setiap langkah:** `tsc` setelah menulis kode, `vitest` setelah menulis test, `wrangler dev` + `curl` untuk memastikan perilaku nyata.
+- **Jangan percaya ingatan soal versi library.** Selalu cek versi terbaru dan dokumentasi paket yang terpasang, karena API bisa berubah.
+- **Commit kecil dan bermakna**, satu commit per langkah logis.
+
+### 19.2 Langkah 1: Merencanakan
+
+Sebelum membuka editor, rencana ditulis dan disepakati:
+
+| Keputusan | Pilihan | Alasan |
+|---|---|---|
+| Framework | Hono + `@hono/zod-openapi` | Satu skema Zod = validasi + tipe + dokumentasi Swagger |
+| Database | D1 + file migration | SQL biasa, ada emulasi lokal, gratis |
+| Test | Vitest di runtime Workers | Mengetes perilaku asli, bukan mock |
+| Endpoint | create, list, get, update stage, delete | Kebutuhan inti + tambahan get/delete |
+| Stage | Pipeline maju + `rejected`, `hired`/`rejected` final | Mencerminkan proses rekrutmen nyata |
+| Auth | Bearer API key (secret Worker) | Sederhana, cukup untuk service-to-service |
+| Rate limit | Binding Rate Limiting Workers | Gratis, tidak memakan kuota D1/KV (free tier) |
+| Bahasa API | JSON `camelCase`, kolom DB `snake_case` | Konvensi masing-masing ekosistem |
+
+Rencana juga mencantumkan struktur folder, daftar test, dan isi README, agar hasil akhirnya jelas sejak awal.
+
+### 19.3 Langkah 2: Mengecek tooling
+
+```bash
+node --version      # v26.x (minimal Node 20)
+npm --version       # 11.x
+git --version
+gh --version        # GitHub CLI
+gh auth status      # memastikan sudah login ke akun GitHub
+```
+
+Wrangler **tidak** dipasang global. Ia dipasang sebagai `devDependency` agar versi yang dipakai semua developer sama persis (terkunci di `package-lock.json`).
+
+### 19.4 Langkah 3: Scaffold dan install dependency
+
+Alih-alih memakai template generator, project dibuat manual supaya setiap file dipahami.
+
+**a. Cek versi terbaru dan *peer dependency*:**
+
+```bash
+npm view hono version
+npm view @hono/zod-openapi version peerDependencies
+npm view @cloudflare/vitest-plugin version peerDependencies
+```
+
+Dari sini ketahuan bahwa plugin test Workers membutuhkan **Vitest 4.x**, sehingga Vitest dipasang dengan versi `^4.1.0` dan bukan versi terbaru.
+
+**b. Buat `package.json`** berisi `"type": "module"` dan script (`dev`, `test`, `deploy`, `db:migrate:*`, `cf-typegen`, `typecheck`).
+
+**c. Install:**
+
+```bash
+npm install hono @hono/zod-openapi @hono/swagger-ui zod
+npm install -D wrangler "vitest@^4.1.0" @cloudflare/vitest-plugin typescript
+```
+
+**Masalah #1: install script diblokir.** npm versi baru tidak menjalankan *postinstall script* secara default. Akibatnya `workerd` (runtime Workers) dan `esbuild` (bundler) tidak terpasang sempurna. Solusinya, review lalu izinkan secara eksplisit:
+
+```bash
+npm install-scripts ls                      # lihat paket mana yang butuh script
+npm install-scripts approve workerd esbuild
+npm rebuild workerd esbuild
+npx wrangler --version                      # verifikasi
+```
+
+**Masalah #2: paket test sudah *deprecated*.** Awalnya yang dipasang adalah `@cloudflare/vitest-pool-workers`. Saat README-nya dibaca di `node_modules`, ternyata paket itu sudah diganti namanya menjadi **`@cloudflare/vitest-plugin`**. Paket lama di-uninstall dan diganti. Lalu file `.d.mts`-nya dibaca untuk mengetahui API yang benar (`cloudflareTest`, `readD1Migrations`, `applyD1Migrations`), karena API ini berbeda dari versi lama yang banyak ditemui di tutorial.
+
+> **Pelajaran:** sebelum memakai sebuah paket, baca `README.md` dan file tipe (`.d.ts`) di `node_modules`. Itu sumber kebenaran untuk versi yang benar-benar terpasang.
+
+### 19.5 Langkah 4: Konfigurasi
+
+File yang dibuat berurutan:
+
+1. **`wrangler.jsonc`**: nama Worker, `main`, `compatibility_date`, binding D1 (`DB`) dengan `database_id` placeholder (cukup untuk lokal), dan binding rate limiter (`RATE_LIMITER`, 60 req/60 detik).
+2. **`.gitignore`**: `node_modules/`, `.wrangler/` (state lokal), dan **`.dev.vars`** (secret).
+3. **`.dev.vars.example`** (di-commit) dan **`.dev.vars`** (tidak di-commit) berisi `API_KEY`.
+4. **`tsconfig.json`**: `moduleResolution: "Bundler"`, `strict`, dan `types` mengarah ke `worker-configuration.d.ts` serta tipe `cloudflare:test`.
+
+### 19.6 Langkah 5: Skema database
+
+```bash
+# file dibuat manual; bisa juga: npx wrangler d1 migrations create sekolah-karir-db create_applicants
+migrations/0001_create_applicants.sql
+```
+
+Skema didesain dengan validasi berlapis di level DB (`NOT NULL`, `UNIQUE COLLATE NOCASE`, `CHECK`) plus index untuk kolom yang sering difilter/diurutkan. Lihat [bagian 8.2](#82-migration).
+
+### 19.7 Langkah 6: Generate tipe
+
+```bash
+npx wrangler types
+```
+
+Ini menghasilkan `worker-configuration.d.ts` dengan interface `Env` yang sudah berisi `DB`, `RATE_LIMITER`, dan `API_KEY`. Setelah ini semua kode mendapat autocomplete dan type-checking untuk binding.
+
+### 19.8 Langkah 7: Menulis kode, lapis demi lapis
+
+Urutan penulisan (dari yang paling tidak bergantung pada apa pun):
+
+| Urutan | File | Isi |
+|---|---|---|
+| 1 | `src/lib/errors.ts` | Class `ApiError` + format error seragam |
+| 2 | `src/lib/stages.ts` | Daftar stage + tabel perpindahan yang diizinkan |
+| 3 | `src/schemas/applicant.ts` | Semua skema Zod + metadata OpenAPI |
+| 4 | `src/db/applicants.ts` | Semua query D1 (prepared statement, `RETURNING`, `batch`) |
+| 5 | `src/middleware/auth.ts` | Cek Bearer API key secara *constant-time* |
+| 6 | `src/middleware/rate-limit.ts` | Rate limit per IP |
+| 7 | `src/lib/validation.ts` | Hook untuk merapikan error validasi |
+| 8 | `src/routes/applicants.ts` | `createRoute` + handler untuk 5 endpoint |
+| 9 | `src/index.ts` | Merakit semuanya: middleware, route, Swagger, error handler |
+
+Setelah selesai, langsung dicek:
+
+```bash
+npx tsc --noEmit
+```
+
+### 19.9 Langkah 8: Test otomatis
+
+1. **`vitest.config.ts`**: memakai `cloudflareTest()`, membaca binding dari `wrangler.jsonc`, meng-*override* `API_KEY`, dan mengirim migration lewat binding `TEST_MIGRATIONS`.
+2. **`test/apply-migrations.ts`**: menjalankan migration ke D1 lokal sebelum test.
+3. **`test/helpers.ts`**: fungsi `call()` yang memanggil `app.request()` dengan IP unik per request (agar test biasa tidak saling terkena rate limit).
+4. **`test/applicants.test.ts`** dan **`test/security.test.ts`**: 40 test (lihat [bagian 15](#15-testing)).
+
+```bash
+npx vitest run
+```
+
+**Hasil percobaan pertama: 38 lulus, 2 gagal.** Justru di sinilah test membuktikan nilainya:
+
+| Test gagal | Penyebab | Perbaikan |
+|---|---|---|
+| Rate limit: request ke-31 sudah 429, padahal batasnya 60 | Middleware didaftarkan untuk `'/applicants/*'` **dan** `'/applicants'`. Di Hono, pola `/*` sudah mencakup path induknya, jadi rate limiter terpanggil 2× per request | Hapus pendaftaran kedua, tambahkan komentar penjelasan |
+| Body JSON rusak menghasilkan 500, bukan 400 | Hono melempar `HTTPException(400)` sebelum Zod berjalan, dan `onError` belum menangani jenis error itu | Tangani `HTTPException` di `app.onError` → `400 INVALID_JSON` |
+
+Setelah diperbaiki: **40/40 lulus**, dan `tsc` bersih.
+
+### 19.10 Langkah 9: Smoke test manual
+
+Test otomatis memanggil app langsung. Untuk memastikan Worker juga berjalan benar lewat HTTP sungguhan:
+
+```bash
+npx wrangler d1 migrations apply sekolah-karir-db --local   # buat tabel di DB lokal
+npx wrangler dev --port 8787                                # jalankan server
+```
+
+Lalu di terminal lain, setiap skenario dicoba dengan `curl`: health check, tanpa API key (401), create (201), input tidak valid (400 + detail field), pindah stage (200), pindah stage ilegal (422 + daftar `allowed`), list dengan filter, get, delete (204), serta `/docs` dan `/openapi.json`. Terakhir, `/docs` dibuka di browser untuk memastikan Swagger UI tampil lengkap dengan tombol **Authorize**.
+
+### 19.11 Langkah 10: Dokumentasi
+
+README ditulis setelah kode stabil, supaya semua contoh (`curl`, respons JSON, kode error) diambil dari perilaku nyata, bukan tebakan.
+
+### 19.12 Langkah 11: Git dan GitHub
+
+```bash
+git init -b main
+```
+
+Sebelum commit pertama:
+- `git status` dicek untuk memastikan **`.dev.vars` tidak ikut ter-*stage***.
+- File yang di-commit diperiksa untuk memastikan tidak ada nilai secret di dalamnya.
+- `.gitattributes` (`* text=auto eol=lf`) ditambahkan agar line ending konsisten LF meski dikerjakan di Windows.
+
+Commit dibuat per langkah logis, bukan satu commit raksasa:
+
+```
+Scaffold Hono Worker with D1 binding, rate limiter and applicants migration
+Add applicant API: create, list, get, update stage, delete
+Add tests running in the Workers runtime with local D1
+Add Indonesian README covering Hono, Workers and D1
+```
+
+Repo GitHub dibuat dan di-push dalam satu perintah dengan GitHub CLI:
+
+```bash
+gh repo create MuhammadUmarAlFajar_BackEndEngineer_SKBatch2 --public \
+  --description "Applicant records API built with Hono, Cloudflare Workers and D1" \
+  --source . --remote origin --push
+```
+
+### 19.13 Ringkasan perintah dari nol
+
+Kalau ingin mengulang seluruh proses untuk project baru:
+
+```bash
+mkdir proyek-baru && cd proyek-baru
+npm init -y                                   # lalu set "type": "module" di package.json
+npm install hono @hono/zod-openapi @hono/swagger-ui zod
+npm install -D wrangler "vitest@^4.1.0" @cloudflare/vitest-plugin typescript
+npm install-scripts approve workerd esbuild && npm rebuild
+# tulis wrangler.jsonc, tsconfig.json, .gitignore, .dev.vars, migrations/0001_*.sql
+npx wrangler types
+# tulis src/** dan test/**
+npx tsc --noEmit
+npx vitest run
+npx wrangler d1 migrations apply <nama-db> --local
+npx wrangler dev
+git init -b main && git add -A && git commit -m "Initial commit"
+gh repo create <nama-repo> --public --source . --remote origin --push
+```
+
+---
+
+## 20. Langkah Belajar Selanjutnya
 
 Beberapa ide untuk mengembangkan project ini sambil belajar fitur Cloudflare lain:
 
