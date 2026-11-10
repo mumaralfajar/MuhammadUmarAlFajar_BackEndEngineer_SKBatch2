@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "sekolah-karir-api",
+  "name": "backendengineer-skbatch2",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
   "observability": {
@@ -10,10 +10,10 @@
     {
       // Nama binding: diakses di kode sebagai c.env.DB
       "binding": "DB",
-      "database_name": "sekolah-karir-db",
-      // Ganti dengan ID dari `npx wrangler d1 create sekolah-karir-db` sebelum deploy.
+      "database_name": "backendengineer-skbatch2-db",
+      // Ganti dengan ID dari `npx wrangler d1 create backendengineer-skbatch2-db` sebelum deploy.
       // Untuk development lokal, nilai placeholder ini sudah cukup.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "f2471189-2b9e-4073-8d45-70d5fee9ad9c",
       "migrations_dir": "migrations"
     }
   ],
@@ -24,7 +24,10 @@
     {
       "name": "RATE_LIMITER",
       "namespace_id": "1001",
-      "simple": { "limit": 60, "period": 60 }
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
     }
   ]
   // Secret API_KEY TIDAK ditulis di sini.
